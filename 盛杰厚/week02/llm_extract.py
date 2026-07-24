@@ -15,18 +15,6 @@ class Entity(BaseModel):
     targetPerson: str = Field(description="实体2")
 
 
-response = llm.chat.completions.create(
-    model="deepseek-v4-flash",
-    messages=[
-        {"role": "system", "content": """你是一个实体关系提取专家。请严格按照JSON格式输出，不要包含其他内容。格式如下 : 
-         {"person": "实体1", "relationShip": "关系", "targetPerson": "实体2"}"""},
-        {"role": "user", "content": "小明喜欢小姚，但是小姚喜欢小王"}
-    ],
-    temperature=0.0,
-    response_format={"type": "json_object"}
-
-)
-
 
 def getToolsDict(entity) -> dict:
     schema = entity.model_json_schema()
