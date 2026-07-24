@@ -27,7 +27,7 @@ class RelationshipAnalysisAgent:
             api_key
             or os.getenv("LLM_API_KEY")
             or os.getenv("OPENAI_API_KEY")
-            or "sk-86fec757d81a42b0bf6a8a514d55a9c7"
+            or "sk-86fec757dxxxabuf6a8a514d55a9c7"
         )
         base_url = (
             base_url
