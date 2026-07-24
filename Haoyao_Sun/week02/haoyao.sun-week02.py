@@ -9,7 +9,7 @@ import math
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="sk-yfqejlbhabiovwcbjotxdvyjtaamjmifjrqbljjrypkeythx",
+    api_key="sk-yfqejlbhabiovwcbxxxabujmifjrqbljjrypkeythx",
     base_url="https://api.siliconflow.cn/v1/",
 )
 
