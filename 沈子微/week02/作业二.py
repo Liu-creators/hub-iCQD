@@ -3,7 +3,7 @@ from openai import OpenAI
 
 # 初始化客户端
 client = OpenAI(
-    api_key="sk-kawntalubkjisuhlwuzxxvcftcswqbddurowzfwfaeftbowt",
+    api_key="sk-kawntalubkjisxxxabuvcftcswqbddurowzfwfaeftbowt",
     base_url="https://api.siliconflow.cn/v1",
 )
 
