@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1420" viewBox="0 0 1500 1420" role="img" aria-labelledby="title desc">
+  <title id="title">FastAPI 意图识别服务请求处理流程图</title>
+  <desc id="desc">从客户端发送请求开始，经过 FastAPI 路由、Pydantic 校验、四种模型分类分支，最后生成统一 JSON 响应。</desc>
+  <defs>
+    <linearGradient id="header" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#475569"/>
+    </marker>
+    <style>
+      .zh { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; }
+      .title { font-size: 36px; font-weight: 700; fill: #ffffff; }
+      .subtitle { font-size: 18px; font-weight: 400; fill: #dbeafe; }
+      .node-title { font-size: 23px; font-weight: 700; fill: #0f172a; }
+      .node-text { font-size: 17px; font-weight: 400; fill: #475569; }
+      .small { font-size: 15px; font-weight: 400; fill: #64748b; }
+      .edge-label { font-size: 16px; font-weight: 600; fill: #334155; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+      .blue-box { fill: #eff6ff; stroke: #60a5fa; stroke-width: 2; }
+      .green-box { fill: #f0fdf4; stroke: #4ade80; stroke-width: 2; }
+      .amber-box { fill: #fffbeb; stroke: #fbbf24; stroke-width: 2; }
+      .violet-box { fill: #f5f3ff; stroke: #a78bfa; stroke-width: 2; }
+      .rose-box { fill: #fff1f2; stroke: #fb7185; stroke-width: 2; }
+      .line { fill: none; stroke: #475569; stroke-width: 3; marker-end: url(#arrow); }
+      .join { fill: none; stroke: #94a3b8; stroke-width: 3; }
+    </style>
+  </defs>
+
+  <rect width="1500" height="1420" fill="#f8fafc"/>
+  <rect x="0" y="0" width="1500" height="104" fill="url(#header)"/>
+  <text x="750" y="46" text-anchor="middle" class="zh title">FastAPI 意图识别服务请求处理流程</text>
+  <text x="750" y="78" text-anchor="middle" class="zh subtitle">从 HTTP 请求到统一 JSON 响应</text>
+
+  <rect x="490" y="138" width="520" height="90" rx="18" class="box" filter="url(#shadow)"/>
+  <circle cx="550" cy="183" r="25" fill="#dbeafe"/>
+  <path d="M540 177 h20 M540 185 h20 M545 193 h10" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/>
+  <text x="750" y="177" text-anchor="middle" class="zh node-title">客户端 / 业务系统</text>
+  <text x="750" y="207" text-anchor="middle" class="zh node-text">发送 POST 请求与 JSON 请求体</text>
+  <path d="M750 228 V273" class="line"/>
+  <text x="770" y="258" class="zh small">HTTP</text>
+
+  <rect x="420" y="275" width="660" height="105" rx="18" class="blue-box" filter="url(#shadow)"/>
+  <text x="750" y="316" text-anchor="middle" class="zh node-title">FastAPI 接收请求并匹配路由</text>
+  <text x="750" y="349" text-anchor="middle" class="zh node-text">根据 URL 找到 main.py 中对应的接口函数</text>
+  <path d="M750 380 V425" class="line"/>
+
+  <polygon points="750,425 960,510 750,595 540,510" class="amber-box" filter="url(#shadow)"/>
+  <text x="750" y="498" text-anchor="middle" class="zh node-title">Pydantic 数据校验</text>
+  <text x="750" y="529" text-anchor="middle" class="zh node-text">转换为 TextClassifyRequest</text>
+
+  <path d="M960 510 H1132" class="line"/>
+  <text x="1010" y="493" class="zh edge-label">校验失败</text>
+  <rect x="1140" y="461" width="290" height="98" rx="16" class="rose-box" filter="url(#shadow)"/>
+  <text x="1285" y="501" text-anchor="middle" class="zh node-title">返回 HTTP 422</text>
+  <text x="1285" y="532" text-anchor="middle" class="zh node-text">请求字段或类型错误</text>
+
+  <path d="M750 595 V638" class="line"/>
+  <text x="770" y="623" class="zh edge-label">校验通过</text>
+  <rect x="420" y="640" width="660" height="108" rx="18" class="box" filter="url(#shadow)"/>
+  <text x="750" y="682" text-anchor="middle" class="zh node-title">进入接口处理函数</text>
+  <text x="750" y="714" text-anchor="middle" class="zh node-text">记录开始时间 · 创建响应对象 · 记录请求日志</text>
+  <path d="M750 748 V793" class="line"/>
+
+  <rect x="510" y="795" width="480" height="72" rx="36" fill="#e2e8f0" stroke="#94a3b8" stroke-width="2"/>
+  <text x="750" y="840" text-anchor="middle" class="zh node-title">根据请求 URL 选择分类模型</text>
+
+  <path d="M750 867 V900 H195 V925" class="join"/>
+  <path d="M750 900 H565 V925" class="join"/>
+  <path d="M750 900 H935 V925" class="join"/>
+  <path d="M750 900 H1305 V925" class="join"/>
+  <path d="M195 925 V938" class="line"/>
+  <path d="M565 925 V938" class="line"/>
+  <path d="M935 925 V938" class="line"/>
+  <path d="M1305 925 V938" class="line"/>
+
+  <rect x="45" y="940" width="300" height="150" rx="18" class="green-box" filter="url(#shadow)"/>
+  <text x="195" y="982" text-anchor="middle" class="zh node-title">正则表达式</text>
+  <text x="195" y="1016" text-anchor="middle" class="zh node-text">关键词规则匹配</text>
+  <text x="195" y="1046" text-anchor="middle" class="zh small">/v1/text-cls/regex</text>
+  <text x="195" y="1072" text-anchor="middle" class="zh small">未命中则返回 Other</text>
+
+  <rect x="415" y="940" width="300" height="150" rx="18" class="blue-box" filter="url(#shadow)"/>
+  <text x="565" y="982" text-anchor="middle" class="zh node-title">TF-IDF + SVM</text>
+  <text x="565" y="1016" text-anchor="middle" class="zh node-text">分词 → 特征转换 → 预测</text>
+  <text x="565" y="1046" text-anchor="middle" class="zh small">/v1/text-cls/tfidf</text>
+  <text x="565" y="1072" text-anchor="middle" class="zh small">LinearSVC 输出类别</text>
+
+  <rect x="785" y="940" width="300" height="150" rx="18" class="violet-box" filter="url(#shadow)"/>
+  <text x="935" y="982" text-anchor="middle" class="zh node-title">BERT</text>
+  <text x="935" y="1016" text-anchor="middle" class="zh node-text">Tokenizer → 模型推理</text>
+  <text x="935" y="1046" text-anchor="middle" class="zh small">/v1/text-cls/bert</text>
+  <text x="935" y="1072" text-anchor="middle" class="zh small">取 Logits 最大值</text>
+
+  <rect x="1155" y="940" width="300" height="150" rx="18" class="amber-box" filter="url(#shadow)"/>
+  <text x="1305" y="982" text-anchor="middle" class="zh node-title">GPT 大模型</text>
+  <text x="1305" y="1016" text-anchor="middle" class="zh node-text">相似样本 → Few-shot 提示词</text>
+  <text x="1305" y="1046" text-anchor="middle" class="zh small">/v1/text-cls/gpt</text>
+  <text x="1305" y="1072" text-anchor="middle" class="zh small">调用模型输出类别</text>
+
+  <path d="M195 1090 V1130 H750" class="join"/>
+  <path d="M565 1090 V1130 H750" class="join"/>
+  <path d="M935 1090 V1130 H750" class="join"/>
+  <path d="M1305 1090 V1130 H750" class="join"/>
+  <path d="M750 1130 V1160" class="line"/>
+
+  <rect x="430" y="1162" width="640" height="94" rx="18" class="green-box" filter="url(#shadow)"/>
+  <text x="750" y="1201" text-anchor="middle" class="zh node-title">得到意图分类结果</text>
+  <text x="750" y="1232" text-anchor="middle" class="zh node-text">例如：Music-Play；异常时记录 error_msg</text>
+  <path d="M750 1256 V1288" class="line"/>
+
+  <rect x="360" y="1290" width="780" height="92" rx="18" fill="#0f172a" filter="url(#shadow)"/>
+  <text x="750" y="1328" text-anchor="middle" class="zh" font-size="23" font-weight="700" fill="#ffffff">生成 TextClassifyResponse 并序列化为 JSON</text>
+  <text x="750" y="1358" text-anchor="middle" class="zh" font-size="17" fill="#cbd5e1">返回 request_id · request_text · classify_result · classify_time · error_msg</text>
+
+  <text x="1450" y="1400" text-anchor="end" class="zh small">Week03 · 王鑫炜</text>
+</svg>
