@@ -1,0 +1,18 @@
+作业1：
+1、 langchain 工具调用 和 llm function call 有什么区别？
+
+langchain的bind_tools本质上是对原生tools参数的一层封装和增强，可以轻松切换使用OpenAI、Anthropic等不同提供商的模型，统一格式，专注于业务逻辑。它们的关系类似于"标准化接口"与"底层实现"
+它的的核心工作就是“翻译”，通过@tool装饰器将函数自动转换成OpenAI API所需的格式再传给tools参数
+
+2、 langchain 工具调用 的 速度是受到什么影响？
+调用速度受工具格式转换和计算，模型思考响应影响。
+
+作业2：
+步骤 1 — 请求到达：外部客户端发送 HTTP POST 请求到 /v1/text-cls/{regex|tfidf|bert|gpt}。
+步骤 2 — FastAPI 接收：FastAPI 根据 URL 路由匹配到 main.py 中对应的处理函数，同时把请求体 JSON 按 TextClassifyRequest 做 Pydantic 校验和类型转换（数据不合法会直接返回 422）。
+步骤 3 — 初始化：处理函数记录 start_time，先构造一个空的 TextClassifyResponse（回填 request_id、request_text，其余字段置空）。
+步骤 4 — 打日志：logger.info() 打印请求 ID 和请求文本，方便联调排查。
+步骤 5 — 调用模型：try 块内调用对应的 model_for_xxx(req.request_text)，得到分类结果写入 response.classify_result，同时 error_msg = "ok"。
+步骤 6 — 异常兜底：若模型抛异常，进入 except 块——清空 classify_result，并把 traceback.format_exc() 完整堆栈写入 error_msg（保证接口永不 500）。
+步骤 7 — 计算耗时：classify_time = round(time.time() - start_time, 3)，精确到毫秒。
+步骤 8 — 返回：函数返回 TextClassifyResponse，FastAPI 自动将其序列化为 JSON 响应给客户端
