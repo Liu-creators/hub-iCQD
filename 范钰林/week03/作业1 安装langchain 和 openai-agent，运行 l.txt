@@ -1,0 +1,14 @@
+作业1: 安装langchain 和 openai-agent，运行 langchain / 02_Model工具调用.py
+    回答如下问题：
+        1、 langchain 工具调用 和 llm function call 有什么区别？
+
+langchain只需要再工具函数前加@tool,人工绑定函数就可以执行
+llm function call更加复杂，需要自己定义函数，写对用的工具函数的json,建立映射
+        2、 langchain 工具调用 的 速度是受到什么影响？
+受问题复杂度，上下文长度，大模型响应速率影响
+
+作业2: 阅读意图识别 01-intent-classify 代码，梳理源文件的作用，绘制从fastapi 接受请求到
+     到返回结果的流程，绘制流程图（手绘、自然语言表达）。
+FastAPI获取请求-》判断是get还是post请求，到调用对应的接口
+
+post请求-》问题内容封装成所需的数据格式-》创建空返回数据结构-》通过大模型调用对应方法-》将数据填到返回数据中-》返回数据结构
