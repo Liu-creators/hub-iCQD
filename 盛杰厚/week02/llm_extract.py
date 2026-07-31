@@ -3,7 +3,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 llm = OpenAI(
-    api_key="sk-0e7927087ebe4069bed4e93d5d7d5744",
+    api_key="sk-0e7927087ebxxxabud4e93d5d7d5744",
     base_url="https://api.deepseek.com",
 )
 
