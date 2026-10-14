@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = ["integration: tests that call real LLM APIs"]
+addopts = "-m 'not integration' --strict-markers"
