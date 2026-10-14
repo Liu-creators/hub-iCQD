@@ -1,6 +1,6 @@
 import os
 
-os.environ["OPENAI_API_KEY"] = "sk-9439e09bfdbf4b9dbc85d7871ad78c12"
+os.environ["OPENAI_API_KEY"] = "sk-xx"
 os.environ["OPENAI_BASE_URL"] = "https://api.deepseek.com"
 
 from agents.mcp.server import MCPServerSse
