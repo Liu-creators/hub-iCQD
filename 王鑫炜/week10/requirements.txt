@@ -1,0 +1,4 @@
+openai-agents==0.19.4
+fastmcp==3.4.8
+python-dotenv>=1.0,<2.0
+pydantic>=2.12,<3.0
