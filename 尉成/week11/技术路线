@@ -1,0 +1,560 @@
+# 客户成功 Chat BI 技术路线设计文档（TRD）
+
+| 项 | 内容 |
+|---|---|
+| 产品名称 | CS Copilot（客户成功 Chat BI） |
+| 文档版本 | V1.0 |
+| 文档状态 | 待评审 |
+| 关联文档 | 《产品定位文档 V1.0》《PRD V1.0》《功能设计文档 V1.0》 |
+| 目标读者 | 架构师、后端、前端、数据、算法、运维、测试 |
+| 设计范围 | P0 技术方案；P1 仅列扩展点 |
+
+---
+
+## 1. 设计目标与约束
+
+### 1.1 技术目标
+
+1. 支撑“自然语言 → 意图/槽位 → 澄清 → 语义层查询 → 湖表 → 结构化结果”的端到端链路。
+2. 澄清引擎与 LLM 解耦，规则可配置、可测试、可审计。
+3. 查询经指标语义层生成，**不裸跑 LLM 生成的 SQL**。
+4. 权限默认注入，无权客户不泄露存在性。
+5. 配置化：指标字典、澄清规则、阈值、话术不发版可调整。
+6. 满足性能：单客户查询 P95 ≤3s，列表/计数 P95 ≤5s，澄清响应 ≤1s。
+
+### 1.2 约束
+
+| 约束 | 说明 |
+|---|---|
+| 数据源 | 统一湖表，不直连 CRM/工单/埋点/财务等源系统 |
+| 客户标识 | 客户ID 全局唯一 |
+| 指标字典 | 初期为模拟字典，后续业务维护 |
+| 权限 | 区域 + 经理/专员分权分域 |
+| 写操作 | 本期只读 |
+| LLM | 需支持结构化输出（JSON Schema），可私有化或内网调用 |
+
+---
+
+## 2. 总体技术架构
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ 接入层：Web 前端 / 企业 IM 机器人（可选） / OpenAPI              │
+├──────────────────────────────────────────────────────────────┤
+│ 网关层：鉴权 / 限流 / 路由 / trace_id 注入 / 审计前置            │
+├──────────────────────────────────────────────────────────────┤
+│ 应用编排层（Orchestrator）                                     │
+│  会话管理 / 状态机 / 澄清编排 / 权限注入 / 结果组装              │
+├───────────────────────────┬──────────────────────────────────┤
+│ 理解服务（AI Service）      │ 查询服务（Query Service）          │
+│  意图识别 / 槽位抽取 /       │  指标语义层 / 查询模板 /            │
+│  客户实体解析 / 置信度        │  参数校验 / 湖表执行 / 结果归并      │
+├───────────────────────────┴──────────────────────────────────┤
+│ 支撑服务                                                       │
+│  权限服务 / 配置服务（指标字典+澄清规则）/ 客户主数据服务 /        │
+│  审计日志 / 埋点 / 降级兜底                                     │
+├──────────────────────────────────────────────────────────────┤
+│ 数据层                                                         │
+│  MySQL（配置/会话/审计） / Redis（缓存/会话态） /                │
+│  湖表查询引擎（Trino/Spark SQL/ClickHouse，视湖表形态） /         │
+│  LLM 推理服务（内网/私有化）                                     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**核心设计决策**：
+
+| 决策 | 选择 | 理由 |
+|---|---|---|
+| 是否裸 NL2SQL | 否 | 可控、可审计、口径统一、权限安全 |
+| 澄清逻辑位置 | 独立编排层 | 与 LLM 解耦，规则可配置 |
+| 查询生成方式 | 指标语义层模板 + 参数渲染 | 避免 LLM 生成 SQL 的不可控 |
+| 理解层语言 | Python | LLM 生态成熟，结构化输出支持好 |
+| 编排层语言 | Java | 企业级事务、权限、审计集成成熟 |
+| 服务间通信 | HTTP/JSON + 异步可选 MQ | 简单可控，MVP 不引入强依赖 |
+
+---
+
+## 3. 技术选型
+
+| 层 | 推荐方案 | 备选 | 说明 |
+|---|---|---|---|
+| 前端 | React + TypeScript + Ant Design | Vue3 + Element Plus | 聊天流、卡片、表格组件成熟 |
+| 网关 | Spring Cloud Gateway / Nginx + Lua | APISIX | 鉴权、限流、trace_id |
+| 编排层 | Java 17 + Spring Boot 3 | Go | 状态机、事务、权限集成 |
+| 理解层 | Python 3.11 + FastAPI | Java + LangChain4j | LLM 调用、JSON Schema 校验 |
+| LLM | 内网大模型 / 商用 API（支持 function calling / JSON mode） | 本地开源模型 | 需支持结构化输出与低延迟 |
+| 澄清规则引擎 | 自研轻量规则引擎（JSON 配置驱动） | Drools | 规则简单，自研更可控 |
+| 指标语义层 | 自研（YAML/JSON 模板 + 参数化 SQL） | dbt Semantic Layer / Cube | 轻量、贴合湖表 |
+| 配置/会话/审计存储 | MySQL 8.0 | PostgreSQL | 事务与 JSON 字段支持 |
+| 缓存/会话态 | Redis 7 | — | 会话状态、字典缓存、限流 |
+| 湖表查询 | Trino / Spark SQL / ClickHouse（按湖表形态） | Presto | 统一 SQL 入口 |
+| 消息队列（P1） | Kafka | RabbitMQ | 审计异步化、埋点 |
+| 可观测 | OpenTelemetry + Prometheus + Grafana + Loki | ELK | 全链路 trace |
+| 部署 | Kubernetes + Helm | ECS | 弹性与灰度 |
+| CI/CD | GitLab CI / Jenkins + ArgoCD | — | 镜像与配置分离 |
+
+---
+
+## 4. 分层详细设计
+
+### 4.1 接入层与网关
+
+| 能力 | 设计 |
+|---|---|
+| 鉴权 | 对接公司 SSO/OAuth2，网关注入 `user_id`、`role`、`region_id`、`team_id` |
+| 限流 | 单用户 10 QPS，管理接口 5 QPS |
+| trace_id | 网关生成，贯穿全链路 |
+| 审计前置 | 记录原始请求元信息（脱敏后） |
+| 路由 | `/chat/**` → 编排层；`/admin/**` → 配置服务 |
+
+### 4.2 应用编排层（Orchestrator）
+
+**职责**：会话状态机、澄清编排、权限注入、结果组装、降级决策。
+
+**会话状态机**（Redis 存储 + MySQL 持久化）：
+
+```text
+IDLE → UNDERSTANDING → (CLARIFYING ⇄ UNDERSTANDING) → QUERYING → RESULT
+                     ↘ REJECT
+异常 → ERROR / FALLBACK
+```
+
+**会话态结构（Redis Hash）**：
+
+```json
+{
+  "session_id": "s-001",
+  "user_id": "u-100",
+  "status": "CLARIFYING",
+  "intent_code": "health.risk_count",
+  "slots": {"risk_scope": {"include_subhealth": true}},
+  "clarify_round": 1,
+  "pending_rule_id": "CR-02",
+  "trace_id": "t-001",
+  "ttl": 1800
+}
+```
+
+**关键流程**：
+
+1. 接收 `/chat/query` → 取会话态 → 调用理解服务。
+2. 理解结果 → 澄清规则引擎（配置服务拉规则）→ 需澄清则返回澄清卡片并更新会话态。
+3. 槽位齐全 → 权限注入 → 调用查询服务。
+4. 查询结果 → 结果组装（脚注、空结果分类）→ 返回并写审计。
+
+**降级策略**：
+
+| 故障 | 降级 |
+|---|---|
+| 理解服务超时/LLM 不可用 | 规则关键词匹配 + 意图选项引导（CR-08） |
+| 查询服务超时 | 返回 `QUERY_TIMEOUT`，建议重试或缩小范围 |
+| 配置服务不可用 | 使用本地缓存规则（TTL 5min），缓存失效则拒答并提示 |
+| Redis 不可用 | 会话降级为无状态单轮，提示“多轮澄清暂不可用” |
+
+### 4.3 理解服务（AI Service）
+
+**职责**：意图识别、槽位抽取、客户实体解析、置信度评估。
+
+**处理流程**：
+
+```text
+输入：message + 最近3轮上下文 + 指标字典别名 + 槽位Schema
+  ↓
+LLM 结构化输出（JSON Schema 约束）
+  ↓
+Schema 校验 + 枚举校验 + 置信度阈值判断
+  ↓
+客户实体解析（精确 → 名称 → 模糊 → 权限过滤）
+  ↓
+输出：intent_code、slots、confidence、customer_candidates
+```
+
+**LLM 调用设计**：
+
+| 项 | 设计 |
+|---|---|
+| 提示词 | System：意图与槽位定义、指标别名、输出 Schema；User：当前问题+上下文 |
+| 输出约束 | JSON Schema + function calling / JSON mode；失败重试 1 次 |
+| 超时 | 单次 ≤2s，整体 ≤2.5s |
+| 置信度 | LLM 返回 confidence + 规则校验分，取加权 |
+| 缓存 | 相同问题+相同用户权限的意图结果缓存 10min（可选） |
+| 脱敏 | 送入 LLM 前对客户名称做占位替换，返回后回填（可选，视合规） |
+
+**客户实体解析**：
+
+| 步骤 | 实现 |
+|---|---|
+| 精确匹配 | 客户ID/名称精确查客户主数据服务 |
+| 模糊匹配 | 名称包含 + 编辑距离（如 Levenshtein ≤2），Top5 |
+| 权限过滤 | 调权限服务过滤候选 |
+| 多候选 | 返回候选，触发 CR-01 |
+| 无权 | 统一 `NO_PERMISSION`，不确认存在性 |
+
+**意图低置信处理**：`confidence < 0.5` → 拒答/引导；`0.5–0.8` → CR-08 意图选项。
+
+### 4.4 澄清规则引擎
+
+**职责**：根据意图、槽位、配置规则决定是否澄清、澄清什么、如何兜底。
+
+**规则匹配算法**：
+
+```text
+rules = config.get_rules(intent_code)  // 含 * 通配
+sort by priority asc
+for rule in rules:
+    if rule.trigger(slots, session, user):
+        if session.clarify_round >= rule.max_rounds:
+            slots = apply_default(rule)
+            mark_default(rule)
+            continue
+        return build_clarify(rule, slots)
+return proceed_to_query(slots)
+```
+
+**触发条件 DSL（JSON）**：
+
+```json
+{
+  "type": "slot_missing",
+  "slot": "risk_scope"
+}
+```
+
+```json
+{
+  "type": "slot_equals",
+  "slot": "target_period",
+  "value": "year",
+  "always_confirm": true
+}
+```
+
+```json
+{
+  "type": "customer_multi_match",
+  "min_candidates": 2
+}
+```
+
+**规则缓存**：配置服务变更通过 Redis Pub/Sub 广播失效，本地缓存 TTL 5min 兜底。
+
+**兜底动作**：`use_default_and_notice` → 应用默认并在脚注标注；`reject` → 返回引导。
+
+### 4.5 查询服务与指标语义层
+
+**核心原则**：LLM 不生成 SQL；语义层用**模板 + 参数**生成参数化 SQL。
+
+**指标字典结构（扩展 FDD）**：
+
+```yaml
+metric_code: health_risk_count
+domain: health
+semantic:
+  source: lake.cs_health_snapshot
+  time_field: snapshot_date
+  query_template: |
+    SELECT
+      COUNT(DISTINCT customer_id) AS total,
+      SUM(CASE WHEN health_score >= 60 AND health_score < 80 THEN 1 ELSE 0 END) AS subhealth,
+      SUM(CASE WHEN health_score >= 40 AND health_score < 60 THEN 1 ELSE 0 END) AS risk,
+      SUM(CASE WHEN health_score < 40 THEN 1 ELSE 0 END) AS high_risk
+    FROM lake.cs_health_snapshot
+    WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM lake.cs_health_snapshot)
+      AND health_score < :upper_bound
+      AND (:region_id IS NULL OR region_id = :region_id)
+      AND (:team_id IS NULL OR team_id = :team_id)
+      AND (:owner_id IS NULL OR owner_id = :owner_id)
+params:
+  - name: upper_bound
+    type: int
+    source: slot.risk_scope.upper_bound
+  - name: region_id
+    type: string
+    source: permission.region_id
+  - name: team_id
+    type: string
+    source: permission.team_id
+  - name: owner_id
+    type: string
+    source: permission.owner_id
+result:
+  type: count_with_breakdown
+```
+
+**查询生成流程**：
+
+```text
+intent + slots + permission
+  ↓
+查指标字典 → 取 query_template + params 映射
+  ↓
+参数绑定（槽位 + 权限 + 默认值）
+  ↓
+SQL 白名单校验（仅允许 SELECT、表名白名单、禁止子查询嵌套过深）
+  ↓
+湖表引擎执行（超时 5s，最大返回行数限制）
+  ↓
+结果归并（列表/计数/卡片）
+```
+
+**安全校验**：
+
+| 校验 | 规则 |
+|---|---|
+| 语句类型 | 仅 SELECT |
+| 表白名单 | 仅允许字典中声明的表 |
+| 参数化 | 全部参数绑定，禁止字符串拼接 |
+| 行数限制 | 列表默认 LIMIT 500，超限提示缩小范围 |
+| 超时 | 查询 5s，超时中断 |
+| 权限 | 所有模板强制含权限参数，缺失则拒绝生成 |
+
+**为什么不用 LLM 生成 SQL**：口径不可控、权限易绕过、审计困难、结果不可复现。语义层模板保证可复现与可审计。
+
+### 4.6 结果组装层
+
+| 结果类型 | 组装内容 |
+|---|---|
+| 单客户卡片 | 客户标识、指标值、等级、趋势、脚注 |
+| 列表 | 表头、分页、标签、脚注 |
+| 计数 | 总数 + 分解 + 口径 |
+| 空结果 | 原因分类（无数据/无权限/条件过严/目标缺失/数据未生成） |
+| 拒答 | 错误码 + 引导 + 示例 |
+| 错误 | 错误码 + 可读提示 + 重试 |
+
+**脚注生成**：`caliber`（来自指标字典）、`scope`（权限范围与数量）、`time_window`、`data_updated_at`（湖表分区时间）、`default_slots`（默认项来源）。
+
+### 4.7 支撑服务
+
+| 服务 | 职责 | 技术 |
+|---|---|---|
+| 权限服务 | 区域/团队/负责人关系查询，注入过滤条件 | 对接公司权限中心或湖表 `dim_permission` |
+| 配置服务 | 指标字典、澄清规则 CRUD、版本、灰度、变更广播 | Spring Boot + MySQL + Redis Pub/Sub |
+| 客户主数据服务 | 客户ID/名称/区域/负责人查询与模糊匹配 | 湖表/主数据 API |
+| 审计服务 | 全链路审计落库、脱敏、保留策略 | MySQL + 异步 MQ（P1） |
+| 埋点服务 | 前端/后端事件采集 | 日志 + 数仓 |
+
+---
+
+## 5. 数据架构
+
+### 5.1 存储分层
+
+| 层 | 存储 | 内容 |
+|---|---|---|
+| 配置数据 | MySQL | `metric_dict`、`clarify_rule`、`cs_value_target`（只读）、字典版本 |
+| 会话数据 | Redis + MySQL | 活跃会话 Redis，历史消息 MySQL |
+| 审计数据 | MySQL（P1 可入湖） | `chat_audit_log` |
+| 业务数据 | 湖表 | 客户档案、订单、健康快照、价值指标、目标、权限维表 |
+
+### 5.2 湖表依赖（逻辑视图）
+
+| 逻辑视图 | 用途 | 关键字段 |
+|---|---|---|
+| `dim_customer` | 客户档案 | customer_id、name、industry、region_id、owner_id、level、status |
+| `dwd_order` | 订单流水（P1） | order_id、customer_id、order_date、amount、currency、status |
+| `dws_health_snapshot` | 健康快照 | customer_id、snapshot_date、health_score、sub_scores |
+| `dws_value_metric` | 价值指标 | customer_id、arr、order_amount、expire_date、metric_date |
+| `dim_value_target` | 年度目标 | customer_id、target_year、target_type、target_value、status |
+| `dim_permission` | 权限关系 | user_id、role、region_id、team_id、owner_id |
+
+> 语义层只暴露逻辑视图，屏蔽湖表物理变化。
+
+### 5.3 数据质量与新鲜度
+
+- 每个结果附 `data_updated_at`（取分区最大时间）。
+- 健康快照缺失 → `DATA_NOT_READY`。
+- 目标缺失 → `TARGET_MISSING`，不计算达成率。
+- 湖表异常 → 不返回部分错误结果，统一 `QUERY_TIMEOUT`/`DATA_ERROR`。
+
+---
+
+## 6. 关键流程时序
+
+### 6.1 澄清流程
+
+```text
+User → Gateway → Orchestrator → AI Service → LLM
+                                 ↓
+                          intent+slots+confidence
+                                 ↓
+                         Clarify Engine（配置服务拉规则）
+                                 ↓
+                          需澄清 → 返回澄清卡片
+                                 ↓
+User 选择 → /chat/clarify → Orchestrator → 更新 slots → 继续
+```
+
+### 6.2 查询流程
+
+```text
+Orchestrator → 权限注入 → Query Service
+                          ↓
+                    指标字典模板渲染
+                          ↓
+                    SQL 安全校验
+                          ↓
+                    湖表引擎执行
+                          ↓
+              结果归并 → 脚注组装 → 返回
+                          ↓
+                    审计落库（异步）
+```
+
+### 6.3 降级流程
+
+```text
+AI Service 超时 → Orchestrator 规则关键词匹配
+                → 无法匹配 → CR-08 意图选项
+                → 用户选择 → 继续
+```
+
+---
+
+## 7. 接口与协议
+
+### 7.1 对外接口
+
+| 接口 | 方法 | 说明 |
+|---|---|---|
+| `/chat/query` | POST | 对话查询，返回澄清/结果/拒答 |
+| `/chat/clarify` | POST | 提交澄清选择 |
+| `/metrics` | GET/POST/PUT | 指标字典管理 |
+| `/clarify-rules` | GET/POST/PUT | 澄清规则管理 |
+| `/audit/logs` | GET | 审计查询 |
+| `/health` | GET | 健康检查 |
+
+### 7.2 内部接口
+
+| 调用 | 协议 | 超时 | 重试 |
+|---|---|---|---|
+| Orchestrator → AI Service | HTTP/JSON | 2.5s | 1 次 |
+| Orchestrator → Query Service | HTTP/JSON | 5s | 0 |
+| Orchestrator → 权限服务 | HTTP/JSON | 500ms | 1 次 |
+| Orchestrator → 配置服务 | HTTP/JSON | 500ms | 1 次（缓存兜底） |
+| Query Service → 湖表 | JDBC/HTTP | 5s | 0 |
+| AI Service → LLM | HTTP | 2s | 1 次 |
+
+### 7.3 统一响应结构
+
+```json
+{
+  "answer_type": "clarify|result|reject|error",
+  "trace_id": "t-001",
+  "intent_code": "health.risk_count",
+  "payload": {},
+  "footnotes": {},
+  "error": {"code": "", "message": ""}
+}
+```
+
+---
+
+## 8. 部署架构
+
+### 8.1 服务拓扑
+
+```text
+K8s Cluster
+├── gateway (2+ pods)
+├── orchestrator (3+ pods, HPA)
+├── ai-service (2+ pods, GPU 可选)
+├── query-service (2+ pods)
+├── config-service (2 pods)
+├── audit-service (2 pods, P1)
+└── redis-cluster / mysql-ha / trino-coordinator
+```
+
+### 8.2 环境
+
+| 环境 | 用途 | 数据 |
+|---|---|---|
+| DEV | 开发联调 | 模拟湖表/小样本 |
+| TEST | 集成测试 | 脱敏样本 |
+| STAGING | 试点预演 | 生产只读副本 |
+| PROD | 试点与推广 | 生产湖表只读 |
+
+### 8.3 配置与发布
+
+- 镜像与配置分离，配置服务管理业务配置。
+- 灰度：按用户/团队灰度发布规则与版本。
+- 回滚：镜像版本回滚 + 配置版本回滚。
+
+---
+
+## 9. 安全与权限
+
+| 维度 | 设计 |
+|---|---|
+| 身份 | SSO/OAuth2，网关注入用户上下文 |
+| 数据权限 | 权限服务统一注入，SQL 模板强制含权限参数 |
+| 无权保护 | 不确认客户存在性；统计只返回有权范围 |
+| SQL 安全 | 参数化、白名单、仅 SELECT、行数与超时限制 |
+| LLM 安全 | 输入脱敏（可选）、输出 Schema 校验、不执行 LLM 生成 SQL |
+| 审计 | 全链路 trace、原始问题脱敏、配置变更审计 |
+| 敏感字段 | 按角色字段级过滤（P1） |
+| 合规 | 日志保留期限、数据最小化、内网调用 LLM |
+
+---
+
+## 10. 可观测性与运维
+
+| 类别 | 指标/工具 |
+|---|---|
+| 链路 | OpenTelemetry + Jaeger，trace_id 贯穿 |
+| 指标 | QPS、P50/P95/P99、意图置信度分布、澄清触发率/完成率、默认应用率、查询成功率、错误码分布 |
+| 日志 | 结构化 JSON，Loki 检索，敏感字段脱敏 |
+| 告警 | LLM 错误率 >5%、查询超时率 >3%、P95 超阈值、配置服务不可用 |
+| 看板 | Grafana：业务漏斗（提问→澄清→结果→采纳）+ 技术指标 |
+| 容量 | 按试点 50 并发压测，预留 2 倍余量 |
+
+---
+
+## 11. 性能与容量设计
+
+| 环节 | 目标 | 手段 |
+|---|---|---|
+| 意图+槽位 | ≤800ms | LLM 低延迟调用、Schema 精简、缓存 |
+| 澄清响应 | ≤1s | 规则本地缓存、无 LLM 调用 |
+| 单客户查询 | P95 ≤3s | 语义层模板、湖表索引/分区、结果缓存 10min |
+| 列表/计数 | P95 ≤5s | LIMIT、分区裁剪、预聚合表（P1） |
+| 并发 | 50 会话 | 无状态服务 + HPA |
+| 缓存 | 字典 5min、客户解析 10min、结果 10min | Redis，变更广播失效 |
+
+---
+
+## 12. 演进路线
+
+| 阶段 | 技术重点 |
+|---|---|
+| P0 | 编排+理解+澄清+语义层+权限+审计；单客户/风险计数/价值风险 |
+| P1 | 订货流水、大型客户、健康变好、TOP N、导出图表；预聚合与缓存优化；规则灰度 |
+| P2 | 预警推送（MQ）、多轮复杂追问、解释生成增强、字段级权限、语义层可视化配置 |
+
+---
+
+## 13. 风险与应对
+
+| 风险 | 影响 | 技术应对 |
+|---|---|---|
+| LLM 意图不稳定 | 误识别 | 置信度阈值 + 规则兜底 + 选项澄清 + 测试集回归 |
+| 语义层模板维护成本 | 指标扩展慢 | 模板标准化 + 配置化管理 + P2 可视化 |
+| 湖表查询慢 | P95 不达标 | 分区裁剪、预聚合、结果缓存、LIMIT |
+| 权限绕过 | 数据泄露 | 模板强制权限参数 + SQL 校验 + 越权测试 |
+| 配置错误上线 | 口径错乱 | 配置校验 + 灰度 + 版本回滚 + 变更审计 |
+| LLM 合规 | 数据外泄 | 内网/私有化部署、输入脱敏、最小化上下文 |
+| 会话态丢失 | 澄清中断 | Redis 持久化 + MySQL 会话快照 |
+
+---
+
+## 14. 待确认项
+
+1. 湖表查询引擎形态（Trino/Spark SQL/ClickHouse）与可用性 SLA；
+2. LLM 选型：内网模型能力、结构化输出支持、延迟与配额；
+3. 权限服务是否已有统一中心，或需从湖表维表读取；
+4. 客户名称送入 LLM 是否需脱敏（合规要求）；
+5. 试点并发与数据量级，用于容量规划；
+6. 审计日志保留期限与是否入湖。
+
+---
+
+以上为技术路线设计文档 V1.0。建议评审重点：**第 3 节选型、第 4.5 节指标语义层、第 4.4 节澄清引擎、第 6 节时序、第 9 节安全**。确认后我可以继续输出：**语义层模板规范、LLM Prompt 与 JSON Schema、澄清规则 DSL、部署清单与压测方案**。

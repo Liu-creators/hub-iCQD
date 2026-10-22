@@ -1,0 +1,640 @@
+# 客户成功 Chat BI 数据库设计文档（DDD）
+
+| 项 | 内容 |
+|---|---|
+| 产品名称 | CS Copilot（客户成功 Chat BI） |
+| 文档版本 | V1.0 |
+| 文档状态 | 待评审 |
+| 关联文档 | 《PRD V1.0》《功能设计文档 V1.0》《技术路线设计文档 V1.0》 |
+| 数据库 | MySQL 8.0（配置/会话/审计） + Redis 7（会话态/缓存） + 湖表（业务数据只读） |
+| 设计范围 | P0 全部表；P1 扩展字段预留 |
+
+---
+
+## 1. 设计原则
+
+| 原则 | 说明 |
+|---|---|
+| 配置与业务分离 | 指标字典、澄清规则、阈值全部配置化，不发版可调整 |
+| 版本可追溯 | 配置表带版本号与变更记录，支持回滚与审计 |
+| 会话可恢复 | 活跃会话 Redis 存储，关键节点快照落 MySQL |
+| 审计完整 | 每次查询记录意图、槽位、澄清、权限、结果、耗时 |
+| 只读湖表 | 业务数据仅通过逻辑视图只读，不在本库冗余存储 |
+| JSON 适度使用 | 槽位、阈值、选项等半结构化数据用 JSON，查询高频字段独立列 |
+| 逻辑删除 | 配置类表用 `is_deleted`，保留历史 |
+| 字符集 | `utf8mb4`，排序 `utf8mb4_0900_ai_ci` |
+| 时间 | 统一 UTC 存储，展示层转换 |
+
+---
+
+## 2. 数据库清单
+
+| 库 | 用途 | 说明 |
+|---|---|---|
+| `cs_chatbi_config` | 配置库 | 指标字典、澄清规则、枚举、版本 |
+| `cs_chatbi_runtime` | 运行时库 | 会话、消息、澄清记录、审计、埋点 |
+| `cs_chatbi_meta` | 元数据库（P1） | 语义层模板、数据源、字段血缘 |
+
+MVP 可先合并为单库 `cs_chatbi`，按表前缀区分：`cfg_`、`rt_`、`meta_`。
+
+---
+
+## 3. ER 关系概览
+
+```text
+cfg_metric_dict 1 ──── N cfg_metric_alias
+cfg_metric_dict 1 ──── N cfg_clarify_rule（按 intent_code 关联）
+cfg_clarify_rule 1 ─── N cfg_clarify_option
+cfg_dict_enum 1 ──── N（被各表 code 引用）
+
+rt_chat_session 1 ──── N rt_chat_message
+rt_chat_session 1 ──── N rt_clarify_record
+rt_chat_session 1 ──── N rt_query_execution
+rt_chat_session 1 ──── N rt_audit_log
+rt_chat_session 1 ──── N rt_event_log
+
+cfg_biz_target（只读同步自湖表/运营维护）
+```
+
+---
+
+## 4. 配置库表设计
+
+### 4.1 指标字典表 `cfg_metric_dict`
+
+```sql
+CREATE TABLE cfg_metric_dict (
+  id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  metric_code       VARCHAR(64)  NOT NULL COMMENT '指标编码，全局唯一',
+  domain            VARCHAR(32)  NOT NULL COMMENT '领域：customer_info/health/value',
+  metric_name       VARCHAR(128) NOT NULL COMMENT '指标名称',
+  description       VARCHAR(512) NULL COMMENT '指标说明',
+  definition        TEXT         NULL COMMENT '业务口径描述',
+  semantic_ref      VARCHAR(256) NOT NULL COMMENT '语义层视图/模板引用',
+  unit              VARCHAR(32)  NULL COMMENT '单位：分/USD/%',
+  value_type        VARCHAR(32)  NOT NULL DEFAULT 'number' COMMENT 'number/ratio/count/list/text',
+  default_time_window VARCHAR(32) NULL COMMENT '默认时间窗：30d/12m/year/latest',
+  grain             VARCHAR(32)  NULL COMMENT '粒度：day/week/month',
+  threshold_json    JSON         NULL COMMENT '阈值/等级/组合规则',
+  permission_field  VARCHAR(64)  NULL COMMENT '权限字段：region_id/team_id/owner_id',
+  clarify_prompt    VARCHAR(512) NULL COMMENT '默认澄清话术',
+  sort_order        INT          NOT NULL DEFAULT 0 COMMENT '展示排序',
+  enabled           TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '是否启用',
+  version           INT          NOT NULL DEFAULT 1 COMMENT '版本号',
+  is_deleted        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+  created_by        VARCHAR(64)  NOT NULL DEFAULT 'system',
+  updated_by        VARCHAR(64)  NOT NULL DEFAULT 'system',
+  created_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_metric_code (metric_code, is_deleted),
+  KEY idx_domain_enabled (domain, enabled),
+  KEY idx_semantic_ref (semantic_ref)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='指标字典';
+```
+
+**`threshold_json` 示例**：
+
+```json
+// health_score
+{"healthy": 80, "subhealth": [60, 80), "risk": [40, 60), "high_risk": [0, 40]}
+
+// health_risk_scope
+{"include_subhealth": true, "upper_bound": 80}
+
+// health_improving
+{"window": "30d", "grain": "week", "consecutive_periods": 2, "strict": true}
+
+// value_risk
+{"achievement_rate_lt": 0.8, "arr_mom_drop_gt": 0.1, "expire_days": 90, "health_score_lt": 80}
+
+// large_customer
+{"order_amount_12m_usd": 2000000, "top_n": 20}
+```
+
+> 注：JSON 中区间用数组表达，解析层统一转换为半开区间，避免边界歧义。
+
+### 4.2 指标别名表 `cfg_metric_alias`
+
+```sql
+CREATE TABLE cfg_metric_alias (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  metric_code  VARCHAR(64)  NOT NULL COMMENT '关联指标编码',
+  alias        VARCHAR(128) NOT NULL COMMENT '别名/同义词',
+  alias_type   VARCHAR(32)  NOT NULL DEFAULT 'synonym' COMMENT 'synonym/abbr/english',
+  enabled      TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_metric_alias (metric_code, alias),
+  KEY idx_alias (alias)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='指标别名词典';
+```
+
+### 4.3 澄清规则表 `cfg_clarify_rule`
+
+```sql
+CREATE TABLE cfg_clarify_rule (
+  id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  rule_id            VARCHAR(64)  NOT NULL COMMENT '规则编码，如 CR-02',
+  intent_code        VARCHAR(64)  NOT NULL COMMENT '适用意图，* 表示全部',
+  slot_name          VARCHAR(64)  NULL COMMENT '目标槽位',
+  rule_name          VARCHAR(128) NOT NULL COMMENT '规则名称',
+  trigger_type       VARCHAR(32)  NOT NULL COMMENT 'slot_missing/slot_equals/customer_multi_match/intent_low_confidence/scope_notice/out_of_scope',
+  trigger_json       JSON         NOT NULL COMMENT '触发条件 DSL',
+  clarify_type       VARCHAR(32)  NOT NULL COMMENT 'option/confirm_default/disambiguate_customer/reject_guide',
+  question_template  TEXT         NOT NULL COMMENT '话术模板，支持 {var}',
+  default_value_json JSON         NULL COMMENT '默认值',
+  fallback_action    VARCHAR(32)  NOT NULL DEFAULT 'use_default_and_notice' COMMENT 'use_default_and_notice/reject',
+  max_rounds         INT          NOT NULL DEFAULT 1 COMMENT '最大澄清轮次',
+  priority           INT          NOT NULL DEFAULT 100 COMMENT '越小越先执行',
+  enabled            TINYINT(1)   NOT NULL DEFAULT 1,
+  version            INT          NOT NULL DEFAULT 1,
+  is_deleted         TINYINT(1)   NOT NULL DEFAULT 0,
+  created_by         VARCHAR(64)  NOT NULL DEFAULT 'system',
+  updated_by         VARCHAR(64)  NOT NULL DEFAULT 'system',
+  created_at         DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at         DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_rule_id (rule_id, is_deleted),
+  KEY idx_intent_enabled (intent_code, enabled, priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='澄清规则';
+```
+
+**`trigger_json` DSL 示例**：
+
+```json
+// 缺槽
+{"type": "slot_missing", "slot": "risk_scope"}
+
+// 默认值确认（列表/计数必确认）
+{"type": "slot_equals", "slot": "target_period", "value": "year", "always_confirm": true}
+
+// 客户多候选
+{"type": "customer_multi_match", "min_candidates": 2, "max_candidates": 5}
+
+// 意图低置信
+{"type": "intent_low_confidence", "min": 0.5, "max": 0.8}
+
+// 权限范围提示
+{"type": "scope_notice", "for_result_types": ["list", "count"]}
+
+// 超范围拒答
+{"type": "out_of_scope", "intents": ["write_op", "other_domain"]}
+```
+
+### 4.4 澄清选项表 `cfg_clarify_option`
+
+```sql
+CREATE TABLE cfg_clarify_option (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  rule_id      VARCHAR(64)  NOT NULL COMMENT '关联澄清规则',
+  option_key   VARCHAR(64)  NOT NULL COMMENT '选项编码',
+  option_label VARCHAR(256) NOT NULL COMMENT '展示文案',
+  option_value JSON         NOT NULL COMMENT '选择后回填的槽位值',
+  is_default   TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否默认选项',
+  sort_order   INT          NOT NULL DEFAULT 0,
+  enabled      TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_rule_option (rule_id, option_key),
+  KEY idx_rule_sort (rule_id, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='澄清规则选项';
+```
+
+**示例（CR-02 风险口径）**：
+
+| option_key | option_label | option_value | is_default |
+|---|---|---|---|
+| `default` | 确认默认（含亚健康） | `{"risk_scope":{"include_subhealth":true,"upper_bound":80}}` | 1 |
+| `risk_only` | 仅风险/高危 | `{"risk_scope":{"include_subhealth":false,"upper_bound":60}}` | 0 |
+
+### 4.5 枚举字典表 `cfg_dict_enum`
+
+```sql
+CREATE TABLE cfg_dict_enum (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  enum_type   VARCHAR(64)  NOT NULL COMMENT '枚举类型：intent_code/domain/operation/error_code/result_type',
+  enum_code   VARCHAR(64)  NOT NULL COMMENT '枚举编码',
+  enum_name   VARCHAR(128) NOT NULL COMMENT '枚举名称',
+  parent_code VARCHAR(64)  NULL COMMENT '父级编码',
+  ext_json    JSON         NULL COMMENT '扩展属性',
+  sort_order  INT          NOT NULL DEFAULT 0,
+  enabled     TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_type_code (enum_type, enum_code),
+  KEY idx_type_sort (enum_type, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='枚举字典';
+```
+
+**初始化枚举**：
+
+| enum_type | enum_code | enum_name |
+|---|---|---|
+| domain | customer_info | 客户信息 |
+| domain | health | 客户健康度 |
+| domain | value | 客户价值指标 |
+| operation | detail | 单客户明细 |
+| operation | list | 列表 |
+| operation | count | 计数 |
+| operation | trend | 趋势 |
+| intent_code | customer_info.detail | 客户基本信息 |
+| intent_code | health.detail | 健康度详情 |
+| intent_code | health.risk_count | 健康风险计数 |
+| intent_code | value.achievement_detail | 价值达成 |
+| intent_code | value.risk_detail | 单客户价值风险 |
+| intent_code | value.risk_list | 价值风险列表 |
+| result_type | card | 单客户卡片 |
+| result_type | table | 列表 |
+| result_type | count | 计数 |
+| result_type | reject | 拒答 |
+| result_type | error | 错误 |
+
+### 4.6 配置版本表 `cfg_config_version`
+
+```sql
+CREATE TABLE cfg_config_version (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  config_type   VARCHAR(64)  NOT NULL COMMENT 'metric_dict/clarify_rule/clarify_option',
+  config_key    VARCHAR(128) NOT NULL COMMENT '配置业务键',
+  version       INT          NOT NULL COMMENT '版本号',
+  snapshot_json JSON         NOT NULL COMMENT '变更后完整快照',
+  change_type   VARCHAR(16)  NOT NULL COMMENT 'create/update/delete/enable/disable',
+  change_summary VARCHAR(512) NULL COMMENT '变更摘要',
+  changed_by    VARCHAR(64)  NOT NULL,
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_type_key_version (config_type, config_key, version),
+  KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='配置变更版本快照';
+```
+
+### 4.7 价值目标表 `cfg_biz_target`
+
+> 运营经理在线维护，本库作为 Chat BI 查询的统一入口；如湖表已有目标表，此表为同步副本或视图。
+
+```sql
+CREATE TABLE cfg_biz_target (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  customer_id   VARCHAR(64)   NOT NULL COMMENT '客户ID',
+  target_year   SMALLINT      NOT NULL COMMENT '目标年度',
+  target_type   VARCHAR(32)   NOT NULL COMMENT 'ARR/order_amount',
+  target_value  DECIMAL(18,2) NOT NULL COMMENT '目标值',
+  currency      VARCHAR(8)    NOT NULL DEFAULT 'USD',
+  status        VARCHAR(16)   NOT NULL DEFAULT 'active' COMMENT 'active/draft/archived',
+  maintained_by VARCHAR(64)   NOT NULL COMMENT '维护人',
+  source        VARCHAR(32)   NOT NULL DEFAULT 'manual' COMMENT 'manual/lake_sync',
+  created_at    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_customer_year_type_status (customer_id, target_year, target_type, status),
+  KEY idx_year_status (target_year, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='客户年度价值目标';
+```
+
+---
+
+## 5. 运行时库表设计
+
+### 5.1 会话表 `rt_chat_session`
+
+```sql
+CREATE TABLE rt_chat_session (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  session_id     VARCHAR(64)  NOT NULL COMMENT '会话ID',
+  user_id        VARCHAR(64)  NOT NULL COMMENT '用户ID',
+  user_role      VARCHAR(32)  NOT NULL COMMENT 'CSM/manager/region',
+  region_id      VARCHAR(64)  NULL COMMENT '区域ID',
+  team_id        VARCHAR(64)  NULL COMMENT '团队ID',
+  status         VARCHAR(32)  NOT NULL DEFAULT 'IDLE' COMMENT '状态机状态',
+  intent_code    VARCHAR(64)  NULL COMMENT '当前意图',
+  slots_json     JSON         NULL COMMENT '当前槽位',
+  clarify_round  INT          NOT NULL DEFAULT 0 COMMENT '已澄清轮次',
+  pending_rule_id VARCHAR(64) NULL COMMENT '待响应澄清规则',
+  trace_id       VARCHAR(64)  NULL COMMENT '最近一次链路ID',
+  message_count  INT          NOT NULL DEFAULT 0,
+  started_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  last_active_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  closed_at      DATETIME(3)  NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_session_id (session_id),
+  KEY idx_user_active (user_id, last_active_at),
+  KEY idx_status_active (status, last_active_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='会话主表';
+```
+
+### 5.2 消息表 `rt_chat_message`
+
+```sql
+CREATE TABLE rt_chat_message (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  message_id    VARCHAR(64)  NOT NULL COMMENT '消息ID',
+  session_id    VARCHAR(64)  NOT NULL COMMENT '会话ID',
+  trace_id      VARCHAR(64)  NULL COMMENT '链路ID',
+  role          VARCHAR(16)  NOT NULL COMMENT 'user/assistant/system',
+  msg_type      VARCHAR(32)  NOT NULL COMMENT 'text/clarify_option/clarify_confirm/customer_disambiguation/result_card/result_table/result_count/reject_guide/error_notice',
+  content_json  JSON         NOT NULL COMMENT '消息体',
+  intent_code   VARCHAR(64)  NULL COMMENT '消息关联意图',
+  seq_no        INT          NOT NULL COMMENT '会话内序号',
+  token_usage   INT          NULL COMMENT 'LLM token 消耗（助手消息）',
+  latency_ms    INT          NULL COMMENT '处理耗时',
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_message_id (message_id),
+  KEY idx_session_seq (session_id, seq_no),
+  KEY idx_trace (trace_id),
+  KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='会话消息';
+```
+
+> `content_json` 存储完整消息体（澄清卡片、结果卡片、脚注）。列表类结果的大数据不落库，仅存 `result_ref` 与摘要，明细按需从湖表重查。
+
+### 5.3 澄清记录表 `rt_clarify_record`
+
+```sql
+CREATE TABLE rt_clarify_record (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  record_id       VARCHAR(64)  NOT NULL COMMENT '记录ID',
+  session_id      VARCHAR(64)  NOT NULL,
+  trace_id        VARCHAR(64)  NOT NULL,
+  rule_id         VARCHAR(64)  NOT NULL COMMENT '澄清规则',
+  intent_code     VARCHAR(64)  NOT NULL,
+  slot_name       VARCHAR(64)  NULL,
+  round_no        INT          NOT NULL COMMENT '第几轮澄清',
+  question_text   TEXT         NOT NULL COMMENT '实际展示话术',
+  options_json    JSON         NULL COMMENT '展示选项快照',
+  selected_key    VARCHAR(64)  NULL COMMENT '用户选择选项',
+  selected_value  JSON         NULL COMMENT '回填槽位值',
+  is_default      TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否默认/超时应用',
+  response_ms     INT          NULL COMMENT '用户响应耗时',
+  status          VARCHAR(16)  NOT NULL DEFAULT 'shown' COMMENT 'shown/selected/timeout/abandoned',
+  created_at      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  responded_at    DATETIME(3)  NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_record_id (record_id),
+  KEY idx_session (session_id),
+  KEY idx_rule_status (rule_id, status),
+  KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='澄清交互记录';
+```
+
+### 5.4 查询执行表 `rt_query_execution`
+
+```sql
+CREATE TABLE rt_query_execution (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  execution_id     VARCHAR(64)  NOT NULL COMMENT '执行ID',
+  session_id       VARCHAR(64)  NOT NULL,
+  message_id       VARCHAR(64)  NULL COMMENT '关联助手消息',
+  trace_id         VARCHAR(64)  NOT NULL,
+  intent_code      VARCHAR(64)  NOT NULL,
+  metric_codes     JSON         NULL COMMENT '涉及指标',
+  slots_json       JSON         NOT NULL COMMENT '最终槽位',
+  default_slots    JSON         NULL COMMENT '使用默认值的槽位',
+  permission_filter JSON        NOT NULL COMMENT '权限过滤条件',
+  semantic_template VARCHAR(128) NOT NULL COMMENT '语义层模板',
+  sql_hash         VARCHAR(64)  NOT NULL COMMENT 'SQL 指纹',
+  sql_text         TEXT         NULL COMMENT '渲染后SQL（脱敏，可配置不落）',
+  result_type      VARCHAR(32)  NOT NULL COMMENT 'card/table/count/reject/error',
+  result_count     INT          NULL COMMENT '结果行数/总数',
+  result_summary   JSON         NULL COMMENT '结果摘要（不含明细）',
+  status           VARCHAR(16)  NOT NULL COMMENT 'success/empty/error/timeout',
+  error_code       VARCHAR(64)  NULL,
+  latency_ms       INT          NOT NULL,
+  data_updated_at  DATETIME(3)  NULL COMMENT '湖表数据时间',
+  created_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_execution_id (execution_id),
+  KEY idx_session (session_id),
+  KEY idx_trace (trace_id),
+  KEY idx_intent_status (intent_code, status),
+  KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='查询执行记录';
+```
+
+### 5.5 审计日志表 `rt_audit_log`
+
+```sql
+CREATE TABLE rt_audit_log (
+  id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  trace_id          VARCHAR(64)  NOT NULL,
+  session_id        VARCHAR(64)  NULL,
+  user_id           VARCHAR(64)  NOT NULL,
+  user_role         VARCHAR(32)  NOT NULL,
+  action_type       VARCHAR(32)  NOT NULL COMMENT 'query/clarify/config_change/export/admin_access',
+  raw_query         VARCHAR(1024) NULL COMMENT '原始问题（脱敏）',
+  intent_code       VARCHAR(64)  NULL,
+  confidence        DECIMAL(4,3) NULL COMMENT '意图置信度',
+  slots_json        JSON         NULL,
+  clarify_rules     JSON         NULL COMMENT '触发的澄清规则',
+  permission_filter JSON         NULL,
+  result_type       VARCHAR(32)  NULL,
+  result_count      INT          NULL,
+  status            VARCHAR(16)  NOT NULL COMMENT 'success/fail/reject',
+  error_code        VARCHAR(64)  NULL,
+  client_ip         VARCHAR(64)  NULL,
+  user_agent        VARCHAR(256) NULL,
+  latency_ms        INT          NULL,
+  created_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_trace (trace_id),
+  KEY idx_user_time (user_id, created_at),
+  KEY idx_action_time (action_type, created_at),
+  KEY idx_status_time (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审计日志';
+```
+
+> 审计日志按月分区或按 `created_at` 归档；`raw_query` 入库前脱敏（手机号、邮箱、证件号）。
+
+### 5.6 埋点事件表 `rt_event_log`
+
+```sql
+CREATE TABLE rt_event_log (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  event_name   VARCHAR(64)  NOT NULL COMMENT 'query_submitted/intent_recognized/clarify_shown/clarify_selected/query_executed/result_viewed/followup_clicked/reject_shown/error_shown',
+  session_id   VARCHAR(64)  NULL,
+  user_id      VARCHAR(64)  NOT NULL,
+  trace_id     VARCHAR(64)  NULL,
+  properties   JSON         NOT NULL COMMENT '事件属性',
+  event_time   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_event_time (event_name, event_time),
+  KEY idx_user_time (user_id, event_time),
+  KEY idx_session (session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='埋点事件';
+```
+
+> 高频埋点可先写日志/MQ，批量入湖，MySQL 仅保留近 7–30 天。
+
+### 5.7 降级/异常记录表 `rt_error_log`
+
+```sql
+CREATE TABLE rt_error_log (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  trace_id     VARCHAR(64)  NOT NULL,
+  service_name VARCHAR(64)  NOT NULL COMMENT 'ai-service/orchestrator/query-service',
+  error_code   VARCHAR(64)  NOT NULL,
+  error_message VARCHAR(1024) NULL,
+  context_json JSON         NULL COMMENT '上下文（脱敏）',
+  degraded     TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否触发降级',
+  created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_trace (trace_id),
+  KEY idx_service_time (service_name, created_at),
+  KEY idx_error_time (error_code, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='异常与降级日志';
+```
+
+---
+
+## 6. 索引与约束设计
+
+### 6.1 核心索引清单
+
+| 表 | 索引 | 用途 |
+|---|---|---|
+| `cfg_metric_dict` | `uk_metric_code` | 编码唯一 |
+| `cfg_metric_dict` | `idx_domain_enabled` | 按领域加载启用指标 |
+| `cfg_clarify_rule` | `idx_intent_enabled` | 按意图+优先级加载规则 |
+| `cfg_clarify_option` | `uk_rule_option` | 规则选项唯一 |
+| `cfg_biz_target` | `uk_customer_year_type_status` | 目标唯一性 |
+| `rt_chat_session` | `idx_user_active` | 用户最近会话 |
+| `rt_chat_message` | `idx_session_seq` | 会话消息有序读取 |
+| `rt_clarify_record` | `idx_rule_status` | 澄清效果分析 |
+| `rt_query_execution` | `idx_intent_status` | 查询成功率统计 |
+| `rt_audit_log` | `idx_user_time` / `idx_action_time` | 审计检索 |
+
+### 6.2 约束与外键
+
+- 应用层保证引用完整性，**不建物理外键**（避免跨表锁与迁移困难）。
+- 唯一约束在应用层 + 数据库双保险：`metric_code`、`rule_id`、`session_id`、`message_id`、`execution_id`、`trace_id`。
+- JSON 字段写入前由应用层 JSON Schema 校验。
+
+### 6.3 字符与时间
+
+- 字符集 `utf8mb4`；金额字段 `DECIMAL(18,2)`，币种独立字段。
+- 时间统一 `DATETIME(3)` UTC；审计、埋点类表按时间分区或定期归档。
+
+---
+
+## 7. Redis 键设计
+
+| Key 模式 | 类型 | TTL | 用途 |
+|---|---|---|---|
+| `chat:session:{session_id}` | Hash | 30min | 会话状态、槽位、澄清轮次 |
+| `chat:session:user:{user_id}` | Set | 30min | 用户活跃会话索引 |
+| `cfg:metric:all` | String(JSON) | 5min | 指标字典全量缓存 |
+| `cfg:metric:{code}` | String(JSON) | 5min | 单指标缓存 |
+| `cfg:rule:intent:{intent}` | String(JSON) | 5min | 澄清规则缓存 |
+| `cust:resolve:{user_id}:{hash}` | String(JSON) | 10min | 客户解析结果缓存 |
+| `query:result:{sql_hash}` | String(JSON) | 10min | 查询结果缓存（可选） |
+| `rate:user:{user_id}` | String | 1s | 限流计数 |
+| `cfg:version` | String | 永久 | 配置版本，用于缓存失效判断 |
+
+**缓存失效**：配置变更写 MySQL + 版本号 +1 + Redis Pub/Sub 广播 `cfg:invalidate`，各节点清理本地缓存。
+
+---
+
+## 8. 湖表逻辑视图依赖
+
+> 本库不存储业务明细，仅通过语义层访问以下逻辑视图（物理表在湖仓，Chat BI 只读）。
+
+| 逻辑视图 | 关键字段 | 说明 |
+|---|---|---|
+| `v_dim_customer` | customer_id, customer_name, industry, region_id, team_id, owner_id, customer_level, sign_date, status | 客户档案 |
+| `v_dwd_order` | order_id, customer_id, order_date, product, qty, amount, currency, order_status | 订单流水（P1） |
+| `v_dws_health_snapshot` | customer_id, snapshot_date, health_score, active_score, ticket_score, nps_score, renewal_risk_score | 健康快照 |
+| `v_dws_value_metric` | customer_id, metric_date, arr, order_amount_12m, expire_date | 价值指标 |
+| `v_dim_permission` | user_id, role, region_id, team_id, owner_id | 权限关系 |
+| `v_dim_calendar` | date_key, week_key, month_key, year_key | 时间维 |
+
+**语义层模板与视图映射**存于 `cfg_metric_dict.semantic_ref`，如 `health_risk_count@v_dws_health_snapshot`。
+
+---
+
+## 9. 初始化数据
+
+### 9.1 指标字典初始化（P0）
+
+| metric_code | domain | metric_name | semantic_ref | threshold_json 要点 |
+|---|---|---|---|---|
+| `customer_basic` | customer_info | 客户基本信息 | `customer_basic@v_dim_customer` | 字段集可配 |
+| `health_score` | health | 综合健康分 | `health_score@v_dws_health_snapshot` | `{"healthy":80,"subhealth":[60,80],"risk":[40,60],"high_risk":[0,40]}` |
+| `health_risk_scope` | health | 健康风险口径 | `health_risk_count@v_dws_health_snapshot` | `{"include_subhealth":true,"upper_bound":80}` |
+| `value_achievement` | value | 价值达成率 | `value_achievement@v_dws_value_metric` | `{"target_period":"year","formula":"current_arr/annual_target_arr"}` |
+| `value_risk` | value | 价值风险 | `value_risk@v_dws_value_metric` | `{"achievement_rate_lt":0.8,"arr_mom_drop_gt":0.1,"expire_days":90,"health_score_lt":80}` |
+
+### 9.2 澄清规则初始化（P0）
+
+| rule_id | intent_code | slot | trigger_type | clarify_type | max_rounds | priority |
+|---|---|---|---|---|---|---|
+| CR-01 | `*` | customer_ref | customer_multi_match | disambiguate_customer | 1 | 10 |
+| CR-02 | `health.risk_count`, `health.risk_list` | risk_scope | slot_missing | confirm_default | 1 | 20 |
+| CR-04 | `value.achievement_detail` | target_period | slot_equals | confirm_default | 1 | 20 |
+| CR-05 | `value.risk_detail`, `value.risk_list` | value_risk_rules | slot_missing | confirm_default | 1 | 20 |
+| CR-06 | `*` | scope | scope_notice | confirm_default | 1 | 30 |
+| CR-08 | `*` | intent_code | intent_low_confidence | option | 1 | 5 |
+| CR-09 | `*` | — | out_of_scope | reject_guide | 0 | 1 |
+
+---
+
+## 10. 数据生命周期与归档
+
+| 表 | 保留策略 | 归档 |
+|---|---|---|
+| `cfg_*` | 长期保留，逻辑删除 | 版本表长期保留 |
+| `rt_chat_session` | 90 天 | 归档至冷存储 |
+| `rt_chat_message` | 90 天 | 归档至湖表 |
+| `rt_clarify_record` | 180 天 | 归档至湖表 |
+| `rt_query_execution` | 180 天 | 归档至湖表 |
+| `rt_audit_log` | 按公司合规（建议 ≥1 年） | 按月分区/入湖 |
+| `rt_event_log` | 30 天（MySQL） | 批量入湖长期保留 |
+| `rt_error_log` | 90 天 | 入湖 |
+
+**清理任务**：每日凌晨按分区/时间清理，先归档后删除，记录清理审计。
+
+---
+
+## 11. 容量估算（试点）
+
+| 表 | 日增行数（估） | 单行大小（估） | 日增容量 | 90 天容量 |
+|---|---|---|---|---|
+| `rt_chat_session` | 500 | 1KB | 0.5MB | 45MB |
+| `rt_chat_message` | 5,000 | 2KB | 10MB | 900MB |
+| `rt_clarify_record` | 1,500 | 1KB | 1.5MB | 135MB |
+| `rt_query_execution` | 2,000 | 3KB | 6MB | 540MB |
+| `rt_audit_log` | 5,000 | 2KB | 10MB | 900MB |
+| `rt_event_log` | 20,000 | 0.5KB | 10MB | 300MB（30天） |
+
+> 按试点 50 并发、10 名 CSM、日均 500 会话估算；正式推广按 10 倍预留。
+
+---
+
+## 12. 安全与合规设计
+
+| 项 | 设计 |
+|---|---|
+| 敏感字段 | `raw_query` 入库前脱敏；`sql_text` 默认不落库（配置开关） |
+| 权限数据 | `permission_filter` 记录实际过滤条件，便于越权审计 |
+| 审计不可篡改 | 应用层只插入不更新；P1 可对接日志审计系统 |
+| 配置变更 | `cfg_config_version` 记录前后快照与操作人 |
+| 数据最小化 | 结果明细不落库，仅存摘要；必要时按 `execution_id` 重查 |
+| 备份 | MySQL 每日全备 + binlog；Redis 持久化 AOF |
+| 加密 | 传输 TLS；静态加密按公司规范 |
+
+---
+
+## 13. 待确认项
+
+1. 配置库与运行时库是否合并部署（MVP 可合，推广期拆分）；
+2. `cfg_biz_target` 是以本库为主数据，还是仅同步湖表目标表；
+3. `sql_text` 是否允许落库（涉及口径审计与合规）；
+4. 审计日志保留期限与是否按月分区；
+5. 结果缓存（`query:result`）是否启用，缓存键是否需带权限指纹；
+6. 消息表是否存列表明细，或仅存摘要 + 重查。
+
+---
+
+以上为数据库设计文档 V1.0。建议评审重点：**第 4 节配置表（指标字典与澄清规则）、第 5.4 节查询执行表、第 7 节 Redis 键、第 9 节初始化数据**。确认后我可以继续输出：**语义层模板规范与 SQL 模板库、LLM Prompt 与 JSON Schema、澄清规则 DSL 完整定义、测试用例集**。

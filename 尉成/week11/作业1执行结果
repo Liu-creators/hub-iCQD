@@ -1,0 +1,41 @@
+E:\anaconda3\envs\py313\python.exe "E:\PY项目学习\第11周\Week11\04_SQL-Code-Agent-Demo\作业1-SQL agent.py"
+Table -> albums
+Table -> artists
+Table -> customers
+Table -> employees
+Table -> genres
+Table -> invoice_items
+Table -> invoices
+Table -> media_types
+Table -> playlist_track
+Table -> playlists
+Table -> tracks
+
+============================================================
+❓ 问题：albums 表里一共有多少张专辑？
+============================================================
+📌 选中表：['albums', 'artists', 'invoices', 'tracks']
+🧾 生成 SQL：SELECT COUNT(*) FROM albums;
+✅ 执行成功，返回 1 行
+💬 回答：albums 表中共有 **347** 张专辑。
+
+
+============================================================
+❓ 问题：每个艺术家分别发行了多少张专辑？
+============================================================
+📌 选中表：['albums', 'artists']
+🧾 生成 SQL：SELECT artists.Name, COUNT(albums.AlbumId) AS album_count FROM artists JOIN albums ON artists.ArtistId = albums.ArtistId GROUP BY artists.ArtistId, artists.Name;
+✅ 执行成功，返回 204 行
+💬 回答：查询结果显示共有 204 位艺术家有专辑记录，每个艺术家的专辑数量不同。例如：
+
+- Led Zeppelin：14 张
+- Various Artists：4 张
+- Audioslave：3 张
+- Gilberto Gil：3 张
+- AC/DC、Accept、Antônio Carlos Jobim、Black Label Society、Black Sabbath、Caetano Veloso、Chico Science & Nação Zumbi、Cidade Negra、Milton Nascimento 等：2 张
+- Aerosmith、Alanis Morissette、Alice In Chains、Apocalyptica、Billy Cobham、Bruce Dickinson 等：1 张
+
+以上仅为查询结果前 30 行的示例，完整结果共 204 行。
+
+
+进程已结束，退出代码为 0
