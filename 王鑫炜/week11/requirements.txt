@@ -1,0 +1,2 @@
+# Python 3.9+，核心程序和测试仅使用 Python 标准库，无需 pip 安装。
+# 若使用 Notebook，请自行安装 Jupyter；命令行运行不需要。
