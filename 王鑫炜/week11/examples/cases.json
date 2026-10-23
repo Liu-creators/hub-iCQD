@@ -1,0 +1,63 @@
+[
+  {
+    "id": "artist_count",
+    "question": "专辑表中一共涉及多少位不同的艺术家？",
+    "tables": ["albums"],
+    "sql": "SELECT COUNT(DISTINCT ArtistId) AS artist_count FROM albums",
+    "explanation": "按 albums.ArtistId 去重，只统计有专辑的艺术家，不等于 artists 总行数。",
+    "expected_rows": [[204]]
+  },
+  {
+    "id": "country_sales",
+    "question": "按发票账单国家统计销售额，列出销售额最高的前五个国家。",
+    "tables": ["invoices"],
+    "sql": "SELECT BillingCountry AS country, ROUND(SUM(Total), 2) AS revenue FROM invoices GROUP BY BillingCountry ORDER BY revenue DESC, country ASC LIMIT 5",
+    "explanation": "按 BillingCountry 分组，对发票头 Total 求和，使用全部历史数据；数据未注明币种。",
+    "expected_rows": [["USA", 523.06], ["Canada", 303.96], ["France", 195.1], ["Brazil", 190.1], ["Germany", 156.48]]
+  },
+  {
+    "id": "genre_sales",
+    "question": "按音乐流派统计售出数量和实际销售额，列出销售额最高的前三类。",
+    "tables": ["genres", "tracks", "invoice_items"],
+    "sql": "SELECT g.Name AS genre, SUM(ii.Quantity) AS units, ROUND(SUM(ii.UnitPrice * ii.Quantity), 2) AS revenue FROM invoice_items AS ii JOIN tracks AS t ON ii.TrackId = t.TrackId JOIN genres AS g ON t.GenreId = g.GenreId GROUP BY g.GenreId, g.Name ORDER BY revenue DESC, genre ASC LIMIT 3",
+    "explanation": "按明细成交单价乘数量计算销售额，按 Quantity 求销量；tracks 仅用于关联流派。"
+  },
+  {
+    "id": "rewrite_column",
+    "question": "全部发票的总销售额是多少？",
+    "tables": ["invoices"],
+    "sql": "SELECT ROUND(SUM(Amount), 2) AS revenue FROM invoices",
+    "rewrites": ["SELECT ROUND(SUM(Total), 2) AS revenue FROM invoices"],
+    "explanation": "发票头每行一张发票，对 Total 求和；初始 SQL 故意使用不存在的 Amount 演示自动修正。",
+    "expected_rows": [[2328.6]]
+  },
+  {
+    "id": "monthly_2013",
+    "question": "2013 年每月的发票销售额分别是多少？",
+    "tables": ["invoices"],
+    "sql": "SELECT strftime('%Y-%m', InvoiceDate) AS month, ROUND(SUM(Total), 2) AS revenue FROM invoices WHERE InvoiceDate >= '2013-01-01' AND InvoiceDate < '2014-01-01' GROUP BY month ORDER BY month",
+    "explanation": "以 InvoiceDate 过滤 2013 年，左闭右开，按年月分组，对 Total 求和。"
+  },
+  {
+    "id": "bridge_join",
+    "question": "按艺术家统计实际销售额，列出销售额最高的前三位。",
+    "tables": ["artists", "invoice_items"],
+    "sql": "SELECT ar.Name AS artist, ROUND(SUM(ii.UnitPrice * ii.Quantity), 2) AS revenue FROM artists AS ar JOIN albums AS al ON ar.ArtistId = al.ArtistId JOIN tracks AS t ON al.AlbumId = t.AlbumId JOIN invoice_items AS ii ON t.TrackId = ii.TrackId GROUP BY ar.ArtistId, ar.Name ORDER BY revenue DESC, artist ASC LIMIT 3",
+    "explanation": "表选择故意只返回两端，程序沿外键补全 albums 和 tracks；在明细粒度统计成交额。"
+  },
+  {
+    "id": "empty_result",
+    "question": "2026 年有哪些国家产生了发票，各自的销售额是多少？",
+    "tables": ["invoices"],
+    "sql": "SELECT BillingCountry AS country, ROUND(SUM(Total), 2) AS revenue FROM invoices WHERE InvoiceDate >= '2026-01-01' AND InvoiceDate < '2027-01-01' GROUP BY BillingCountry ORDER BY revenue DESC, country ASC",
+    "explanation": "严格查询指定年份；没有记录时返回空集，不推测原因，也不解释成各国销售额均为零。",
+    "expected_rows": []
+  },
+  {
+    "id": "clarification",
+    "question": "最近销售怎么样？",
+    "tables": [],
+    "needs_clarification": true,
+    "clarification": "请明确时间范围，以及要看销售额还是售出数量。当前发票数据覆盖 2009—2013 年，是否分析其中某个时间段？"
+  }
+]

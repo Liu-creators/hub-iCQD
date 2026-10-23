@@ -1,0 +1,718 @@
+[
+  {
+    "question": "专辑表中一共涉及多少位不同的艺术家？",
+    "mode": "replay",
+    "status": "ok",
+    "selected_tables": [
+      "albums"
+    ],
+    "sql": "SELECT COUNT(DISTINCT ArtistId) AS artist_count FROM albums",
+    "result": {
+      "columns": [
+        "artist_count"
+      ],
+      "rows": [
+        [
+          204
+        ]
+      ],
+      "returned_rows": 1,
+      "truncated": false,
+      "row_limit": 50
+    },
+    "answer": "[离线回放] artist_count=204。统计口径：按 albums.ArtistId 去重，只统计有专辑的艺术家，不等于 artists 总行数。",
+    "rewrites": 0,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "ok",
+        "requested_tables": [
+          "albums"
+        ],
+        "tables": [
+          "albums"
+        ],
+        "reason": "预设演示表"
+      },
+      {
+        "stage": "sql_generate",
+        "status": "ok",
+        "sql": "SELECT COUNT(DISTINCT ArtistId) AS artist_count FROM albums",
+        "explanation": "按 albums.ArtistId 去重，只统计有专辑的艺术家，不等于 artists 总行数。"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "ok",
+        "plan": [
+          [
+            5,
+            0,
+            90,
+            "SCAN albums USING COVERING INDEX IFK_AlbumArtistId"
+          ]
+        ]
+      },
+      {
+        "stage": "sql_execute",
+        "status": "ok",
+        "returned_rows": 1,
+        "truncated": false
+      },
+      {
+        "stage": "result_summary",
+        "status": "ok"
+      }
+    ],
+    "explanation": "按 albums.ArtistId 去重，只统计有专辑的艺术家，不等于 artists 总行数。",
+    "elapsed_ms": 0.73,
+    "demo_id": "artist_count"
+  },
+  {
+    "question": "按发票账单国家统计销售额，列出销售额最高的前五个国家。",
+    "mode": "replay",
+    "status": "ok",
+    "selected_tables": [
+      "invoices"
+    ],
+    "sql": "SELECT BillingCountry AS country, ROUND(SUM(Total), 2) AS revenue FROM invoices GROUP BY BillingCountry ORDER BY revenue DESC, country ASC LIMIT 5",
+    "result": {
+      "columns": [
+        "country",
+        "revenue"
+      ],
+      "rows": [
+        [
+          "USA",
+          523.06
+        ],
+        [
+          "Canada",
+          303.96
+        ],
+        [
+          "France",
+          195.1
+        ],
+        [
+          "Brazil",
+          190.1
+        ],
+        [
+          "Germany",
+          156.48
+        ]
+      ],
+      "returned_rows": 5,
+      "truncated": false,
+      "row_limit": 50
+    },
+    "answer": "[离线回放] country, revenue=USA, 523.06；country, revenue=Canada, 303.96；country, revenue=France, 195.1；country, revenue=Brazil, 190.1；country, revenue=Germany, 156.48。统计口径：按 BillingCountry 分组，对发票头 Total 求和，使用全部历史数据；数据未注明币种。",
+    "rewrites": 0,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "ok",
+        "requested_tables": [
+          "invoices"
+        ],
+        "tables": [
+          "invoices"
+        ],
+        "reason": "预设演示表"
+      },
+      {
+        "stage": "sql_generate",
+        "status": "ok",
+        "sql": "SELECT BillingCountry AS country, ROUND(SUM(Total), 2) AS revenue FROM invoices GROUP BY BillingCountry ORDER BY revenue DESC, country ASC LIMIT 5",
+        "explanation": "按 BillingCountry 分组，对发票头 Total 求和，使用全部历史数据；数据未注明币种。"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "ok",
+        "plan": [
+          [
+            8,
+            0,
+            102,
+            "SCAN invoices"
+          ],
+          [
+            10,
+            0,
+            0,
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          [
+            53,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ]
+      },
+      {
+        "stage": "sql_execute",
+        "status": "ok",
+        "returned_rows": 5,
+        "truncated": false
+      },
+      {
+        "stage": "result_summary",
+        "status": "ok"
+      }
+    ],
+    "explanation": "按 BillingCountry 分组，对发票头 Total 求和，使用全部历史数据；数据未注明币种。",
+    "elapsed_ms": 0.86,
+    "demo_id": "country_sales"
+  },
+  {
+    "question": "按音乐流派统计售出数量和实际销售额，列出销售额最高的前三类。",
+    "mode": "replay",
+    "status": "ok",
+    "selected_tables": [
+      "genres",
+      "invoice_items",
+      "tracks"
+    ],
+    "sql": "SELECT g.Name AS genre, SUM(ii.Quantity) AS units, ROUND(SUM(ii.UnitPrice * ii.Quantity), 2) AS revenue FROM invoice_items AS ii JOIN tracks AS t ON ii.TrackId = t.TrackId JOIN genres AS g ON t.GenreId = g.GenreId GROUP BY g.GenreId, g.Name ORDER BY revenue DESC, genre ASC LIMIT 3",
+    "result": {
+      "columns": [
+        "genre",
+        "units",
+        "revenue"
+      ],
+      "rows": [
+        [
+          "Rock",
+          835,
+          826.65
+        ],
+        [
+          "Latin",
+          386,
+          382.14
+        ],
+        [
+          "Metal",
+          264,
+          261.36
+        ]
+      ],
+      "returned_rows": 3,
+      "truncated": false,
+      "row_limit": 50
+    },
+    "answer": "[离线回放] genre, units, revenue=Rock, 835, 826.65；genre, units, revenue=Latin, 386, 382.14；genre, units, revenue=Metal, 264, 261.36。统计口径：按明细成交单价乘数量计算销售额，按 Quantity 求销量；tracks 仅用于关联流派。",
+    "rewrites": 0,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "ok",
+        "requested_tables": [
+          "genres",
+          "tracks",
+          "invoice_items"
+        ],
+        "tables": [
+          "genres",
+          "invoice_items",
+          "tracks"
+        ],
+        "reason": "预设演示表"
+      },
+      {
+        "stage": "sql_generate",
+        "status": "ok",
+        "sql": "SELECT g.Name AS genre, SUM(ii.Quantity) AS units, ROUND(SUM(ii.UnitPrice * ii.Quantity), 2) AS revenue FROM invoice_items AS ii JOIN tracks AS t ON ii.TrackId = t.TrackId JOIN genres AS g ON t.GenreId = g.GenreId GROUP BY g.GenreId, g.Name ORDER BY revenue DESC, genre ASC LIMIT 3",
+        "explanation": "按明细成交单价乘数量计算销售额，按 Quantity 求销量；tracks 仅用于关联流派。"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "ok",
+        "plan": [
+          [
+            12,
+            0,
+            62,
+            "SCAN g"
+          ],
+          [
+            14,
+            0,
+            77,
+            "SEARCH t USING COVERING INDEX IFK_TrackGenreId (GenreId=?)"
+          ],
+          [
+            18,
+            0,
+            44,
+            "SEARCH ii USING INDEX IFK_InvoiceLineTrackId (TrackId=?)"
+          ],
+          [
+            66,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ]
+      },
+      {
+        "stage": "sql_execute",
+        "status": "ok",
+        "returned_rows": 3,
+        "truncated": false
+      },
+      {
+        "stage": "result_summary",
+        "status": "ok"
+      }
+    ],
+    "explanation": "按明细成交单价乘数量计算销售额，按 Quantity 求销量；tracks 仅用于关联流派。",
+    "elapsed_ms": 1.47,
+    "demo_id": "genre_sales"
+  },
+  {
+    "question": "全部发票的总销售额是多少？",
+    "mode": "replay",
+    "status": "ok",
+    "selected_tables": [
+      "invoices"
+    ],
+    "sql": "SELECT ROUND(SUM(Total), 2) AS revenue FROM invoices",
+    "result": {
+      "columns": [
+        "revenue"
+      ],
+      "rows": [
+        [
+          2328.6
+        ]
+      ],
+      "returned_rows": 1,
+      "truncated": false,
+      "row_limit": 50
+    },
+    "answer": "[离线回放] revenue=2328.6。统计口径：根据实际数据库报错修正字段或表达式",
+    "rewrites": 1,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "ok",
+        "requested_tables": [
+          "invoices"
+        ],
+        "tables": [
+          "invoices"
+        ],
+        "reason": "预设演示表"
+      },
+      {
+        "stage": "sql_generate",
+        "status": "ok",
+        "sql": "SELECT ROUND(SUM(Amount), 2) AS revenue FROM invoices",
+        "explanation": "发票头每行一张发票，对 Total 求和；初始 SQL 故意使用不存在的 Amount 演示自动修正。"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "error",
+        "error": "no such column: Amount",
+        "sql": "SELECT ROUND(SUM(Amount), 2) AS revenue FROM invoices"
+      },
+      {
+        "stage": "sql_rewrite",
+        "status": "ok",
+        "sql": "SELECT ROUND(SUM(Total), 2) AS revenue FROM invoices",
+        "explanation": "根据实际数据库报错修正字段或表达式"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "ok",
+        "plan": [
+          [
+            3,
+            0,
+            102,
+            "SCAN invoices"
+          ]
+        ]
+      },
+      {
+        "stage": "sql_execute",
+        "status": "ok",
+        "returned_rows": 1,
+        "truncated": false
+      },
+      {
+        "stage": "result_summary",
+        "status": "ok"
+      }
+    ],
+    "explanation": "根据实际数据库报错修正字段或表达式",
+    "elapsed_ms": 0.77,
+    "demo_id": "rewrite_column"
+  },
+  {
+    "question": "2013 年每月的发票销售额分别是多少？",
+    "mode": "replay",
+    "status": "ok",
+    "selected_tables": [
+      "invoices"
+    ],
+    "sql": "SELECT strftime('%Y-%m', InvoiceDate) AS month, ROUND(SUM(Total), 2) AS revenue FROM invoices WHERE InvoiceDate >= '2013-01-01' AND InvoiceDate < '2014-01-01' GROUP BY month ORDER BY month",
+    "result": {
+      "columns": [
+        "month",
+        "revenue"
+      ],
+      "rows": [
+        [
+          "2013-01",
+          37.62
+        ],
+        [
+          "2013-02",
+          27.72
+        ],
+        [
+          "2013-03",
+          37.62
+        ],
+        [
+          "2013-04",
+          33.66
+        ],
+        [
+          "2013-05",
+          37.62
+        ],
+        [
+          "2013-06",
+          37.62
+        ],
+        [
+          "2013-07",
+          37.62
+        ],
+        [
+          "2013-08",
+          37.62
+        ],
+        [
+          "2013-09",
+          37.62
+        ],
+        [
+          "2013-10",
+          37.62
+        ],
+        [
+          "2013-11",
+          49.62
+        ],
+        [
+          "2013-12",
+          38.62
+        ]
+      ],
+      "returned_rows": 12,
+      "truncated": false,
+      "row_limit": 50
+    },
+    "answer": "[离线回放] month, revenue=2013-01, 37.62；month, revenue=2013-02, 27.72；month, revenue=2013-03, 37.62；month, revenue=2013-04, 33.66；month, revenue=2013-05, 37.62；month, revenue=2013-06, 37.62；month, revenue=2013-07, 37.62；month, revenue=2013-08, 37.62；month, revenue=2013-09, 37.62；month, revenue=2013-10, 37.62；month, revenue=2013-11, 49.62；month, revenue=2013-12, 38.62。统计口径：以 InvoiceDate 过滤 2013 年，左闭右开，按年月分组，对 Total 求和。",
+    "rewrites": 0,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "ok",
+        "requested_tables": [
+          "invoices"
+        ],
+        "tables": [
+          "invoices"
+        ],
+        "reason": "预设演示表"
+      },
+      {
+        "stage": "sql_generate",
+        "status": "ok",
+        "sql": "SELECT strftime('%Y-%m', InvoiceDate) AS month, ROUND(SUM(Total), 2) AS revenue FROM invoices WHERE InvoiceDate >= '2013-01-01' AND InvoiceDate < '2014-01-01' GROUP BY month ORDER BY month",
+        "explanation": "以 InvoiceDate 过滤 2013 年，左闭右开，按年月分组，对 Total 求和。"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "ok",
+        "plan": [
+          [
+            7,
+            0,
+            102,
+            "SCAN invoices"
+          ],
+          [
+            13,
+            0,
+            0,
+            "USE TEMP B-TREE FOR GROUP BY"
+          ]
+        ]
+      },
+      {
+        "stage": "sql_execute",
+        "status": "ok",
+        "returned_rows": 12,
+        "truncated": false
+      },
+      {
+        "stage": "result_summary",
+        "status": "ok"
+      }
+    ],
+    "explanation": "以 InvoiceDate 过滤 2013 年，左闭右开，按年月分组，对 Total 求和。",
+    "elapsed_ms": 0.69,
+    "demo_id": "monthly_2013"
+  },
+  {
+    "question": "按艺术家统计实际销售额，列出销售额最高的前三位。",
+    "mode": "replay",
+    "status": "ok",
+    "selected_tables": [
+      "albums",
+      "artists",
+      "invoice_items",
+      "tracks"
+    ],
+    "sql": "SELECT ar.Name AS artist, ROUND(SUM(ii.UnitPrice * ii.Quantity), 2) AS revenue FROM artists AS ar JOIN albums AS al ON ar.ArtistId = al.ArtistId JOIN tracks AS t ON al.AlbumId = t.AlbumId JOIN invoice_items AS ii ON t.TrackId = ii.TrackId GROUP BY ar.ArtistId, ar.Name ORDER BY revenue DESC, artist ASC LIMIT 3",
+    "result": {
+      "columns": [
+        "artist",
+        "revenue"
+      ],
+      "rows": [
+        [
+          "Iron Maiden",
+          138.6
+        ],
+        [
+          "U2",
+          105.93
+        ],
+        [
+          "Metallica",
+          90.09
+        ]
+      ],
+      "returned_rows": 3,
+      "truncated": false,
+      "row_limit": 50
+    },
+    "answer": "[离线回放] artist, revenue=Iron Maiden, 138.6；artist, revenue=U2, 105.93；artist, revenue=Metallica, 90.09。统计口径：表选择故意只返回两端，程序沿外键补全 albums 和 tracks；在明细粒度统计成交额。",
+    "rewrites": 0,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "ok",
+        "requested_tables": [
+          "artists",
+          "invoice_items"
+        ],
+        "tables": [
+          "albums",
+          "artists",
+          "invoice_items",
+          "tracks"
+        ],
+        "reason": "预设演示表"
+      },
+      {
+        "stage": "sql_generate",
+        "status": "ok",
+        "sql": "SELECT ar.Name AS artist, ROUND(SUM(ii.UnitPrice * ii.Quantity), 2) AS revenue FROM artists AS ar JOIN albums AS al ON ar.ArtistId = al.ArtistId JOIN tracks AS t ON al.AlbumId = t.AlbumId JOIN invoice_items AS ii ON t.TrackId = ii.TrackId GROUP BY ar.ArtistId, ar.Name ORDER BY revenue DESC, artist ASC LIMIT 3",
+        "explanation": "表选择故意只返回两端，程序沿外键补全 albums 和 tracks；在明细粒度统计成交额。"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "ok",
+        "plan": [
+          [
+            13,
+            0,
+            96,
+            "SCAN ar"
+          ],
+          [
+            15,
+            0,
+            35,
+            "SEARCH al USING COVERING INDEX IFK_AlbumArtistId (ArtistId=?)"
+          ],
+          [
+            19,
+            0,
+            48,
+            "SEARCH t USING COVERING INDEX IFK_TrackAlbumId (AlbumId=?)"
+          ],
+          [
+            23,
+            0,
+            44,
+            "SEARCH ii USING INDEX IFK_InvoiceLineTrackId (TrackId=?)"
+          ],
+          [
+            68,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ]
+      },
+      {
+        "stage": "sql_execute",
+        "status": "ok",
+        "returned_rows": 3,
+        "truncated": false
+      },
+      {
+        "stage": "result_summary",
+        "status": "ok"
+      }
+    ],
+    "explanation": "表选择故意只返回两端，程序沿外键补全 albums 和 tracks；在明细粒度统计成交额。",
+    "elapsed_ms": 1.55,
+    "demo_id": "bridge_join"
+  },
+  {
+    "question": "2026 年有哪些国家产生了发票，各自的销售额是多少？",
+    "mode": "replay",
+    "status": "ok",
+    "selected_tables": [
+      "invoices"
+    ],
+    "sql": "SELECT BillingCountry AS country, ROUND(SUM(Total), 2) AS revenue FROM invoices WHERE InvoiceDate >= '2026-01-01' AND InvoiceDate < '2027-01-01' GROUP BY BillingCountry ORDER BY revenue DESC, country ASC",
+    "result": {
+      "columns": [
+        "country",
+        "revenue"
+      ],
+      "rows": [],
+      "returned_rows": 0,
+      "truncated": false,
+      "row_limit": 50
+    },
+    "answer": "[离线回放] 查询没有匹配记录。",
+    "rewrites": 0,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "ok",
+        "requested_tables": [
+          "invoices"
+        ],
+        "tables": [
+          "invoices"
+        ],
+        "reason": "预设演示表"
+      },
+      {
+        "stage": "sql_generate",
+        "status": "ok",
+        "sql": "SELECT BillingCountry AS country, ROUND(SUM(Total), 2) AS revenue FROM invoices WHERE InvoiceDate >= '2026-01-01' AND InvoiceDate < '2027-01-01' GROUP BY BillingCountry ORDER BY revenue DESC, country ASC",
+        "explanation": "严格查询指定年份；没有记录时返回空集，不推测原因，也不解释成各国销售额均为零。"
+      },
+      {
+        "stage": "sql_validate",
+        "status": "ok",
+        "plan": [
+          [
+            7,
+            0,
+            102,
+            "SCAN invoices"
+          ],
+          [
+            13,
+            0,
+            0,
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          [
+            51,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ]
+      },
+      {
+        "stage": "sql_execute",
+        "status": "ok",
+        "returned_rows": 0,
+        "truncated": false
+      },
+      {
+        "stage": "result_summary",
+        "status": "ok"
+      }
+    ],
+    "explanation": "严格查询指定年份；没有记录时返回空集，不推测原因，也不解释成各国销售额均为零。",
+    "elapsed_ms": 0.7,
+    "demo_id": "empty_result"
+  },
+  {
+    "question": "最近销售怎么样？",
+    "mode": "replay",
+    "status": "needs_clarification",
+    "selected_tables": [],
+    "sql": null,
+    "result": null,
+    "answer": "请明确时间范围，以及要看销售额还是售出数量。当前发票数据覆盖 2009—2013 年，是否分析其中某个时间段？",
+    "rewrites": 0,
+    "trace": [
+      {
+        "stage": "database_parse",
+        "status": "ok",
+        "table_count": 11
+      },
+      {
+        "stage": "table_select",
+        "status": "needs_clarification"
+      }
+    ],
+    "elapsed_ms": 0.43,
+    "demo_id": "clarification"
+  }
+]

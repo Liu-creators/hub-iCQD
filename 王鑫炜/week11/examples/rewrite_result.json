@@ -1,0 +1,85 @@
+{
+  "question": "全部发票的总销售额是多少？",
+  "mode": "replay",
+  "status": "ok",
+  "selected_tables": [
+    "invoices"
+  ],
+  "sql": "SELECT ROUND(SUM(Total), 2) AS revenue FROM invoices",
+  "result": {
+    "columns": [
+      "revenue"
+    ],
+    "rows": [
+      [
+        2328.6
+      ]
+    ],
+    "returned_rows": 1,
+    "truncated": false,
+    "row_limit": 50
+  },
+  "answer": "[离线回放] revenue=2328.6。统计口径：根据实际数据库报错修正字段或表达式",
+  "rewrites": 1,
+  "trace": [
+    {
+      "stage": "database_parse",
+      "status": "ok",
+      "table_count": 11
+    },
+    {
+      "stage": "table_select",
+      "status": "ok",
+      "requested_tables": [
+        "invoices"
+      ],
+      "tables": [
+        "invoices"
+      ],
+      "reason": "预设演示表"
+    },
+    {
+      "stage": "sql_generate",
+      "status": "ok",
+      "sql": "SELECT ROUND(SUM(Amount), 2) AS revenue FROM invoices",
+      "explanation": "发票头每行一张发票，对 Total 求和；初始 SQL 故意使用不存在的 Amount 演示自动修正。"
+    },
+    {
+      "stage": "sql_validate",
+      "status": "error",
+      "error": "no such column: Amount",
+      "sql": "SELECT ROUND(SUM(Amount), 2) AS revenue FROM invoices"
+    },
+    {
+      "stage": "sql_rewrite",
+      "status": "ok",
+      "sql": "SELECT ROUND(SUM(Total), 2) AS revenue FROM invoices",
+      "explanation": "根据实际数据库报错修正字段或表达式"
+    },
+    {
+      "stage": "sql_validate",
+      "status": "ok",
+      "plan": [
+        [
+          3,
+          0,
+          102,
+          "SCAN invoices"
+        ]
+      ]
+    },
+    {
+      "stage": "sql_execute",
+      "status": "ok",
+      "returned_rows": 1,
+      "truncated": false
+    },
+    {
+      "stage": "result_summary",
+      "status": "ok"
+    }
+  ],
+  "explanation": "根据实际数据库报错修正字段或表达式",
+  "elapsed_ms": 0.77,
+  "demo_id": "rewrite_column"
+}
