@@ -1,0 +1,70 @@
+{
+  "scope": "Original class methods; AST loading skips unavailable OpenAI import and __init__; temporary SQLite fixtures only.",
+  "limitations": "No live LLM, target database, full run(), concurrency or production benchmark was tested.",
+  "python_sqlite_version": "3.51.0",
+  "python_version": "3.13.9",
+  "dependencies": {
+    "sqlalchemy": "2.0.43",
+    "pandas": "2.3.3"
+  },
+  "source_sha256": {
+    "sql_agent.py": "2dff5406b9e05acf039c9a1a56375da77f4b22ab2613068468e65623031050e1",
+    "db_parser.py": "daa5b905b42eca0305ddefa55c6a344fa2a4f0a57ebc30617216001f799bcbd4"
+  },
+  "checks_passed": 9,
+  "observations": [
+    {
+      "case": "WITH_UPDATE_passes_validation",
+      "observed": true,
+      "expected_current_behavior": true
+    },
+    {
+      "case": "validation_changes_connection_visible_data",
+      "observed": "changed",
+      "expected_current_behavior": "changed"
+    },
+    {
+      "case": "unselected_table_passes_validation",
+      "observed": true,
+      "expected_current_behavior": true
+    },
+    {
+      "case": "unselected_table_is_readable",
+      "observed": [
+        [
+          "fixture-only-secret"
+        ]
+      ],
+      "expected_current_behavior": [
+        [
+          "fixture-only-secret"
+        ]
+      ]
+    },
+    {
+      "case": "exactly_50_rows_marked_truncated",
+      "observed": true,
+      "expected_current_behavior": true
+    },
+    {
+      "case": "exactly_50_rows_returned",
+      "observed": 50,
+      "expected_current_behavior": 50
+    },
+    {
+      "case": "semicolon_in_literal_passes_validation",
+      "observed": false,
+      "expected_current_behavior": false
+    },
+    {
+      "case": "execution_path_rejects_write",
+      "observed": true,
+      "expected_current_behavior": true
+    },
+    {
+      "case": "empty_text_table_initialization_error",
+      "observed": "TypeError",
+      "expected_current_behavior": "TypeError"
+    }
+  ]
+}
